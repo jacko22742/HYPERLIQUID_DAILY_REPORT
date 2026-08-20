@@ -2,11 +2,8 @@ name: Hyperliquid Daily Report
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "30 17 * * *"
 
 jobs:
-
   daily-report:
 
     runs-on: ubuntu-latest
@@ -14,31 +11,25 @@ jobs:
     steps:
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
+      - name: Show exactly what GitHub downloaded
         run: |
-          pip install requests pandas numpy
+          echo "===================================="
+          echo "COMMIT BEING RUN:"
+          git rev-parse HEAD
+          echo "===================================="
 
-      - name: Run Hyperliquid report
+          echo "FILES:"
+          ls -la
+
+          echo "===================================="
+          echo "PYTHON FILE:"
+          cat hyperliquid_report.py
+          echo "===================================="
+
+      - name: Run Python
         env:
           HYPERLIQUID_WALLET: ${{ secrets.HYPERLIQUID_WALLET }}
         run: |
           python hyperliquid_report.py
-
-      - name: Upload daily report
-        uses: actions/upload-artifact@v4
-        with:
-          name: hyperliquid-daily-report
-          path: hyperliquid_daily_report.txt
-
-      - name: Upload account history
-        uses: actions/upload-artifact@v4
-        with:
-          name: hyperliquid-account-history
-          path: account_history.csv
