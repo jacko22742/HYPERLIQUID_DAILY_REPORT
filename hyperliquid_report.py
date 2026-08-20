@@ -21,25 +21,66 @@ EMAIL_TO = [
 
 
 # ============================================================
-# HYPERLIQUID
+# HYPERLIQUID API
 # ============================================================
 
-url = "https://api.hyperliquid.xyz/info"
+URL = "https://api.hyperliquid.xyz/info"
 
 
-response = requests.post(
-    url,
-    json={
-        "type": "userFills",
-        "user": WALLET,
-        "aggregateByTime": False
-    },
-    timeout=30
+def hl_request(payload):
+
+    response = requests.post(
+        URL,
+        json=payload,
+        headers={
+            "Content-Type": "application/json"
+        },
+        timeout=30
+    )
+
+    response.raise_for_status()
+
+    return response.json()
+
+
+# ============================================================
+# GET ACCOUNT VALUE / EQUITY
+# ============================================================
+
+account = hl_request({
+    "type": "clearinghouseState",
+    "user": WALLET
+})
+
+
+margin = account["marginSummary"]
+
+account_value = float(
+    margin["accountValue"]
 )
 
-response.raise_for_status()
+margin_used = float(
+    margin["totalMarginUsed"]
+)
 
-fills = response.json()
+position_value = float(
+    margin["totalNtlPos"]
+)
+
+withdrawable = float(
+    account["withdrawable"]
+)
+
+
+# ============================================================
+# GET FILLS
+# ============================================================
+
+fills = hl_request({
+    "type": "userFills",
+    "user": WALLET,
+    "aggregateByTime": False
+})
 
 
 # ============================================================
@@ -85,16 +126,23 @@ net_pnl = closed_pnl - fees
 
 report = f"""
 HYPERLIQUID DAILY REPORT
+========================
 
 Date: {today}
 
-Trades/Fills: {len(today_fills)}
+ACCOUNT
+-------
+Account Value / Equity: ${account_value:,.2f}
+Position Value:         ${position_value:,.2f}
+Margin Used:            ${margin_used:,.2f}
+Withdrawable:           ${withdrawable:,.2f}
 
-Closed P&L: ${closed_pnl:,.2f}
-
-Trading Fees: ${fees:,.2f}
-
-NET P&L: ${net_pnl:,.2f}
+TODAY'S TRADING
+---------------
+Trades/Fills:            {len(today_fills)}
+Closed P&L:             ${closed_pnl:,.2f}
+Trading Fees:           ${fees:,.2f}
+NET P&L:                ${net_pnl:,.2f}
 """
 
 
@@ -111,7 +159,7 @@ message = MIMEText(
 )
 
 message["Subject"] = (
-    f"Hyperliquid Daily P&L - {today}"
+    f"Hyperliquid Daily Report - {today}"
 )
 
 message["From"] = EMAIL_USERNAME
@@ -122,7 +170,7 @@ message["To"] = ", ".join(
 
 
 with smtplib.SMTP(
-    "smtp.gmail.com",
+    "smtp-mail.outlook.com",
     587
 ) as server:
 
