@@ -2,7 +2,6 @@ import os
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime
 
 
 # ============================================================
@@ -11,7 +10,7 @@ from datetime import datetime
 
 API_URL = "https://api.hyperliquid.xyz/info"
 
-# Get wallet from GitHub Actions Secret
+# Wallet comes from GitHub Actions Secret
 WALLET = os.environ["HYPERLIQUID_WALLET"]
 
 
@@ -76,7 +75,7 @@ def get_funding():
 
 
 # ============================================================
-# FORMAT FILLS
+# PREPARE FILLS
 # ============================================================
 
 def prepare_fills(df):
@@ -90,14 +89,12 @@ def prepare_fills(df):
     # NUMERIC COLUMNS
     # --------------------------------------------------------
 
-    numeric_columns = [
+    for col in [
         "px",
         "sz",
         "closedPnl",
         "fee"
-    ]
-
-    for col in numeric_columns:
+    ]:
 
         if col in df.columns:
 
@@ -118,7 +115,6 @@ def prepare_fills(df):
             utc=True
         )
 
-        # Use London date for daily reporting
         df["datetime_london"] = (
             df["datetime"]
             .dt
@@ -159,26 +155,53 @@ def prepare_fills(df):
 
     else:
 
-        df["notional"] = 0
+        df["notional"] = 0.0
+
+    # --------------------------------------------------------
+    # FEE
+    # --------------------------------------------------------
+    #
+    # IMPORTANT:
+    #
+    # Hyperliquid fee represents a COST.
+    #
+    # We use ABS() so that regardless of whether the API
+    # returns:
+    #
+    #     fee = 2.50
+    #
+    # or:
+    #
+    #     fee = -2.50
+    #
+    # the cost is always treated as:
+    #
+    #     -2.50
+    #
+    # --------------------------------------------------------
+
+    df["feeCost"] = (
+        df["fee"]
+        .abs()
+    )
 
     # --------------------------------------------------------
     # NET TRADING P&L
     # --------------------------------------------------------
     #
-    # Hyperliquid returns:
+    # Closed P&L is the realised trading result.
     #
-    # closedPnl = realised trading P&L
-    # fee       = positive trading fee
+    # Fees are a cost.
     #
     # Therefore:
     #
-    # netTradingPnl = closedPnl - fee
+    # NET = CLOSED P&L - FEE COST
     #
     # --------------------------------------------------------
 
     df["netTradingPnl"] = (
         df["closedPnl"] -
-        df["fee"]
+        df["feeCost"]
     )
 
     return df
@@ -195,13 +218,9 @@ def prepare_funding(df):
 
     df = df.copy()
 
-    # Hyperliquid structure:
-    #
-    # delta = {
-    #     "type": "funding",
-    #     "coin": "BTC",
-    #     "usdc": "..."
-    # }
+    # --------------------------------------------------------
+    # HYPERLIQUID FUNDING
+    # --------------------------------------------------------
 
     if "delta" in df.columns:
 
@@ -273,11 +292,11 @@ def calculate_stats(df):
     )
 
     fees = (
-        df["fee"]
+        df["feeCost"]
         .fillna(0)
     )
 
-    net_trading_pnl = (
+    net_pnl = (
         df["netTradingPnl"]
         .fillna(0)
     )
@@ -285,19 +304,27 @@ def calculate_stats(df):
     stats["Total fills"] = len(df)
 
     # --------------------------------------------------------
-    # P&L
+    # GROSS P&L
     # --------------------------------------------------------
 
     stats["Gross realised P&L"] = (
         gross_pnl.sum()
     )
 
+    # --------------------------------------------------------
+    # FEES
+    # --------------------------------------------------------
+
     stats["Total trading fees"] = (
         fees.sum()
     )
 
+    # --------------------------------------------------------
+    # NET P&L
+    # --------------------------------------------------------
+
     stats["Net trading P&L"] = (
-        net_trading_pnl.sum()
+        net_pnl.sum()
     )
 
     # --------------------------------------------------------
@@ -305,23 +332,27 @@ def calculate_stats(df):
     # --------------------------------------------------------
 
     stats["Gross profit"] = (
-        net_trading_pnl[
-            net_trading_pnl > 0
+        net_pnl[
+            net_pnl > 0
         ].sum()
     )
 
     stats["Gross loss"] = (
-        net_trading_pnl[
-            net_trading_pnl < 0
+        net_pnl[
+            net_pnl < 0
         ].sum()
     )
 
+    # --------------------------------------------------------
+    # WINNING / LOSING FILLS
+    # --------------------------------------------------------
+
     stats["Winning fills"] = (
-        net_trading_pnl > 0
+        net_pnl > 0
     ).sum()
 
     stats["Losing fills"] = (
-        net_trading_pnl < 0
+        net_pnl < 0
     ).sum()
 
     total_decided = (
@@ -330,7 +361,6 @@ def calculate_stats(df):
     )
 
     stats["Win rate"] = (
-
         stats["Winning fills"] /
         max(total_decided, 1)
     )
@@ -342,7 +372,6 @@ def calculate_stats(df):
     if abs(stats["Gross loss"]) > 0:
 
         stats["Profit factor"] = (
-
             stats["Gross profit"] /
             abs(stats["Gross loss"])
         )
@@ -356,17 +385,17 @@ def calculate_stats(df):
     # --------------------------------------------------------
 
     stats["Average net fill P&L"] = (
-        net_trading_pnl.mean()
+        net_pnl.mean()
     )
 
     stats["Average winner"] = (
 
-        net_trading_pnl[
-            net_trading_pnl > 0
+        net_pnl[
+            net_pnl > 0
         ].mean()
 
         if (
-            net_trading_pnl > 0
+            net_pnl > 0
         ).any()
 
         else 0
@@ -374,23 +403,23 @@ def calculate_stats(df):
 
     stats["Average loser"] = (
 
-        net_trading_pnl[
-            net_trading_pnl < 0
+        net_pnl[
+            net_pnl < 0
         ].mean()
 
         if (
-            net_trading_pnl < 0
+            net_pnl < 0
         ).any()
 
         else 0
     )
 
     stats["Largest winner"] = (
-        net_trading_pnl.max()
+        net_pnl.max()
     )
 
     stats["Largest loser"] = (
-        net_trading_pnl.min()
+        net_pnl.min()
     )
 
     # --------------------------------------------------------
@@ -398,12 +427,7 @@ def calculate_stats(df):
     # --------------------------------------------------------
 
     stats["Total volume"] = (
-
         df["notional"].sum()
-
-        if "notional" in df.columns
-
-        else 0
     )
 
     return stats
@@ -435,7 +459,7 @@ def pnl_by_coin(df):
             ),
 
             Fees=(
-                "fee",
+                "feeCost",
                 "sum"
             ),
 
@@ -493,7 +517,7 @@ def long_short_stats(df):
             ),
 
             Fees=(
-                "fee",
+                "feeCost",
                 "sum"
             ),
 
@@ -523,7 +547,7 @@ def daily_pnl(
         return pd.DataFrame()
 
     # --------------------------------------------------------
-    # TRADING
+    # TRADING P&L
     # --------------------------------------------------------
 
     daily = (
@@ -543,7 +567,7 @@ def daily_pnl(
             ),
 
             Fees=(
-                "fee",
+                "feeCost",
                 "sum"
             ),
 
@@ -630,7 +654,7 @@ def calculate_drawdown(daily):
 
 
 # ============================================================
-# CREATE TEXT REPORT
+# CREATE REPORT
 # ============================================================
 
 def create_report(
@@ -643,7 +667,9 @@ def create_report(
     daily
 ):
 
-    margin = account["marginSummary"]
+    margin = account[
+        "marginSummary"
+    ]
 
     account_value = float(
         margin["accountValue"]
@@ -661,6 +687,10 @@ def create_report(
         account["withdrawable"]
     )
 
+    # --------------------------------------------------------
+    # TOTAL NET P&L
+    # --------------------------------------------------------
+
     net_total = (
         stats["Net trading P&L"] +
         total_funding
@@ -669,15 +699,31 @@ def create_report(
     report_date = (
         pd.Timestamp.now(
             tz="Europe/London"
-        ).strftime("%d %B %Y")
+        )
+        .strftime("%d %B %Y")
     )
 
     lines = []
 
-    lines.append("=" * 70)
-    lines.append("HYPERLIQUID DAILY REPORT")
-    lines.append(report_date)
-    lines.append("=" * 70)
+    lines.append(
+        "=" * 70
+    )
+
+    lines.append(
+        "HYPERLIQUID DAILY REPORT"
+    )
+
+    lines.append(
+        report_date
+    )
+
+    lines.append(
+        "=" * 70
+    )
+
+    # ========================================================
+    # ACCOUNT
+    # ========================================================
 
     lines.append("")
     lines.append("--- ACCOUNT ---")
@@ -698,6 +744,10 @@ def create_report(
         f"Withdrawable:        ${withdrawable:,.2f}"
     )
 
+    # ========================================================
+    # TRADING
+    # ========================================================
+
     lines.append("")
     lines.append("--- TRADING ---")
 
@@ -710,7 +760,7 @@ def create_report(
     )
 
     lines.append(
-        f"Trading fees:        ${stats['Total trading fees']:,.2f}"
+        f"Trading fees:        -${stats['Total trading fees']:,.2f}"
     )
 
     lines.append(
@@ -729,7 +779,9 @@ def create_report(
         f"Win rate:            {stats['Win rate']:.2%}"
     )
 
-    if np.isinf(stats["Profit factor"]):
+    if np.isinf(
+        stats["Profit factor"]
+    ):
 
         lines.append(
             "Profit factor:       Infinite"
@@ -757,12 +809,20 @@ def create_report(
         f"Total volume:        ${stats['Total volume']:,.2f}"
     )
 
+    # ========================================================
+    # RISK
+    # ========================================================
+
     lines.append("")
     lines.append("--- RISK ---")
 
     lines.append(
         f"Maximum drawdown:    ${max_dd:,.2f}"
     )
+
+    # ========================================================
+    # COIN
+    # ========================================================
 
     lines.append("")
     lines.append("--- BY COIN ---")
@@ -782,6 +842,10 @@ def create_report(
             "No trading data."
         )
 
+    # ========================================================
+    # LONG / SHORT
+    # ========================================================
+
     lines.append("")
     lines.append("--- LONG / SHORT ---")
 
@@ -799,6 +863,10 @@ def create_report(
         lines.append(
             "No trading data."
         )
+
+    # ========================================================
+    # DAILY
+    # ========================================================
 
     lines.append("")
     lines.append("--- RECENT DAILY P&L ---")
@@ -819,7 +887,9 @@ def create_report(
         )
 
     lines.append("")
-    lines.append("=" * 70)
+    lines.append(
+        "=" * 70
+    )
 
     return "\n".join(lines)
 
@@ -830,11 +900,12 @@ def create_report(
 
 def main():
 
-    print("")
-    print("Connecting to Hyperliquid...")
+    print(
+        "\nConnecting to Hyperliquid..."
+    )
 
     # --------------------------------------------------------
-    # DOWNLOAD DATA
+    # DOWNLOAD
     # --------------------------------------------------------
 
     account = get_account_state()
@@ -864,7 +935,33 @@ def main():
     )
 
     # --------------------------------------------------------
-    # CALCULATE
+    # DEBUG CHECK
+    # --------------------------------------------------------
+
+    print("\n")
+    print("=" * 70)
+    print("P&L / FEE CHECK")
+    print("=" * 70)
+
+    print(
+        f"Closed P&L:          "
+        f"${fills['closedPnl'].sum():,.2f}"
+    )
+
+    print(
+        f"Fee cost:            "
+        f"${fills['feeCost'].sum():,.2f}"
+    )
+
+    print(
+        f"NET TRADING P&L:     "
+        f"${fills['netTradingPnl'].sum():,.2f}"
+    )
+
+    print("=" * 70)
+
+    # --------------------------------------------------------
+    # STATS
     # --------------------------------------------------------
 
     stats = calculate_stats(
@@ -880,8 +977,10 @@ def main():
         fills
     )
 
-    direction_stats = long_short_stats(
-        fills
+    direction_stats = (
+        long_short_stats(
+            fills
+        )
     )
 
     max_dd = calculate_drawdown(
@@ -889,7 +988,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # FUNDING TOTAL
+    # FUNDING
     # --------------------------------------------------------
 
     if (
@@ -907,7 +1006,7 @@ def main():
         total_funding = 0.0
 
     # --------------------------------------------------------
-    # CREATE REPORT
+    # REPORT
     # --------------------------------------------------------
 
     report = create_report(
@@ -921,18 +1020,22 @@ def main():
     )
 
     # --------------------------------------------------------
-    # PRINT TO GITHUB ACTIONS
+    # PRINT
     # --------------------------------------------------------
 
     print("")
     print(report)
 
     # --------------------------------------------------------
-    # SAVE REPORT FILE
+    # SAVE FILE
     # --------------------------------------------------------
 
+    filename = (
+        "hyperliquid_daily_report.txt"
+    )
+
     with open(
-        "hyperliquid_daily_report.txt",
+        filename,
         "w",
         encoding="utf-8"
     ) as f:
@@ -941,11 +1044,7 @@ def main():
 
     print("")
     print(
-        "Report saved as:"
-    )
-
-    print(
-        "hyperliquid_daily_report.txt"
+        f"Report saved as {filename}"
     )
 
 
