@@ -2,6 +2,8 @@ name: Hyperliquid Daily Report
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "30 17 * * *"
 
 jobs:
 
