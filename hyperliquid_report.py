@@ -10,7 +10,6 @@ import numpy as np
 
 API_URL = "https://api.hyperliquid.xyz/info"
 
-# Wallet stored in GitHub Secrets
 WALLET = os.environ["HYPERLIQUID_WALLET"]
 
 HISTORY_FILE = "account_history.csv"
@@ -18,7 +17,7 @@ REPORT_FILE = "hyperliquid_daily_report.txt"
 
 
 # ============================================================
-# HYPERLIQUID API
+# HYPERLIQUID API REQUEST
 # ============================================================
 
 def hl_info(payload):
@@ -166,13 +165,14 @@ def prepare_fills(df):
     # FEE COST
     # --------------------------------------------------------
     #
-    # Keep the original Hyperliquid fee SIGNED.
+    # We treat the fee as a COST.
+    #
+    # abs() makes the displayed fee positive regardless
+    # of whether Hyperliquid returns it as positive or negative.
     #
     # Example:
     #
-    # fee = -22.49
-    #
-    # For display we also create:
+    # API fee = -22.49
     #
     # feeCost = 22.49
     #
@@ -181,8 +181,7 @@ def prepare_fills(df):
     if "fee" in df.columns:
 
         df["feeCost"] = (
-            df["fee"]
-            .abs()
+            df["fee"].abs()
         )
 
     else:
@@ -195,21 +194,24 @@ def prepare_fills(df):
     #
     # IMPORTANT:
     #
-    # Your Hyperliquid API is returning the fee as a
-    # negative signed amount.
+    # Closed P&L is the realised trading result.
+    #
+    # Fee is a COST.
     #
     # Therefore:
     #
     # Net Trading P&L =
     #
-    # closedPnl + fee
+    # Closed P&L - ABS(Fee)
     #
     # Example:
     #
-    # closedPnl = +32.94
-    # fee       = -22.49
+    # Closed P&L = +32.94
+    # Fee        = -22.49
     #
-    # Net       = +10.45
+    # Fee cost   = 22.49
+    #
+    # Net        = 10.45
     #
     # --------------------------------------------------------
 
@@ -220,7 +222,7 @@ def prepare_fills(df):
 
         df["netTradingPnl"] = (
             df["closedPnl"] -
-            df["fee"]
+            df["fee"].abs()
         )
 
     else:
@@ -242,7 +244,7 @@ def prepare_funding(df):
     df = df.copy()
 
     # --------------------------------------------------------
-    # FUNDING VALUE
+    # FUNDING
     # --------------------------------------------------------
 
     if "delta" in df.columns:
@@ -371,7 +373,7 @@ def update_history(
     history = history.copy()
 
     # --------------------------------------------------------
-    # FIND PREVIOUS ACCOUNT VALUE
+    # PREVIOUS ACCOUNT VALUE
     # --------------------------------------------------------
 
     previous_value = None
@@ -394,20 +396,16 @@ def update_history(
             )
 
     # --------------------------------------------------------
-    # ACTUAL DAILY P&L
+    # ACTUAL DAILY ACCOUNT P&L
     # --------------------------------------------------------
     #
-    # This is deliberately NOT calculated from:
+    # This is NOT reconstructed from fills.
     #
-    # closed P&L
-    # + fees
-    # + funding
+    # It is simply:
     #
-    # Instead:
-    #
-    # Today's account value
+    # Current account value
     # minus
-    # previous account value
+    # Previous account value
     #
     # --------------------------------------------------------
 
@@ -423,7 +421,7 @@ def update_history(
         )
 
     # --------------------------------------------------------
-    # REMOVE TODAY IF ALREADY PRESENT
+    # REMOVE EXISTING TODAY
     # --------------------------------------------------------
 
     history = history[
@@ -490,7 +488,7 @@ def calculate_today_stats(
 ):
 
     # --------------------------------------------------------
-    # FILLS
+    # TODAY'S FILLS
     # --------------------------------------------------------
 
     if not fills.empty:
@@ -546,7 +544,7 @@ def calculate_today_stats(
         fills_count = 0
 
     # --------------------------------------------------------
-    # FUNDING
+    # TODAY'S FUNDING
     # --------------------------------------------------------
 
     if not funding.empty:
@@ -622,10 +620,6 @@ def calculate_fill_stats(fills):
         ]
         .fillna(0)
     )
-
-    # --------------------------------------------------------
-    # USE THE ACTUAL netTradingPnl COLUMN
-    # --------------------------------------------------------
 
     net_pnl = (
         fills[
@@ -1060,7 +1054,7 @@ def create_report(
         )
 
     # ========================================================
-    # ALL TIME
+    # ALL-TIME
     # ========================================================
 
     lines.append("")
@@ -1259,7 +1253,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # DOWNLOAD DATA
+    # DOWNLOAD
     # --------------------------------------------------------
 
     account = (
@@ -1283,7 +1277,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # PREPARE DATA
+    # PREPARE
     # --------------------------------------------------------
 
     fills = (
@@ -1296,6 +1290,89 @@ def main():
         prepare_funding(
             funding
         )
+    )
+
+    # ========================================================
+    # RAW P&L / FEE DIAGNOSTIC
+    # ========================================================
+
+    print("")
+    print(
+        "=" * 70
+    )
+    print(
+        "RAW P&L / FEE CHECK"
+    )
+    print(
+        "=" * 70
+    )
+
+    if not fills.empty:
+
+        diagnostic_columns = [
+            col
+            for col in [
+                "coin",
+                "side",
+                "closedPnl",
+                "fee",
+                "feeCost",
+                "netTradingPnl"
+            ]
+            if col in fills.columns
+        ]
+
+        print(
+            fills[
+                diagnostic_columns
+            ]
+            .tail(10)
+            .to_string(
+                index=False
+            )
+        )
+
+        print("")
+        print(
+            f"SUM closedPnl:       "
+            f"${fills['closedPnl'].sum():,.2f}"
+        )
+
+        print(
+            f"SUM raw fee:         "
+            f"${fills['fee'].sum():,.2f}"
+        )
+
+        print(
+            f"SUM feeCost:         "
+            f"${fills['feeCost'].sum():,.2f}"
+        )
+
+        print(
+            f"SUM netTradingPnl:   "
+            f"${fills['netTradingPnl'].sum():,.2f}"
+        )
+
+        print("")
+        print(
+            "EXPECTED CALCULATION:"
+        )
+
+        print(
+            f"Closed P&L - Fee Cost = "
+            f"${fills['closedPnl'].sum():,.2f} - "
+            f"${fills['feeCost'].sum():,.2f} = "
+            f"${fills['netTradingPnl'].sum():,.2f}"
+        )
+
+    else:
+
+        print(
+            "No fills returned."
+        )
+
+    print(
+        "=" * 70
     )
 
     # --------------------------------------------------------
@@ -1326,16 +1403,12 @@ def main():
     )
 
     # --------------------------------------------------------
-    # LOAD HISTORY
+    # HISTORY
     # --------------------------------------------------------
 
     history = (
         load_history()
     )
-
-    # --------------------------------------------------------
-    # UPDATE HISTORY
-    # --------------------------------------------------------
 
     (
         history,
@@ -1351,7 +1424,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # TODAY'S STATS
+    # TODAY STATS
     # --------------------------------------------------------
 
     today_stats = (
@@ -1376,7 +1449,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # COIN STATS
+    # COIN
     # --------------------------------------------------------
 
     coin_stats = (
@@ -1416,7 +1489,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # CREATE REPORT
+    # REPORT
     # --------------------------------------------------------
 
     report = create_report(
@@ -1443,7 +1516,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # PRINT REPORT
+    # PRINT
     # --------------------------------------------------------
 
     print("")
