@@ -2,7 +2,6 @@ import os
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime
 
 
 # ============================================================
@@ -11,7 +10,7 @@ from datetime import datetime
 
 API_URL = "https://api.hyperliquid.xyz/info"
 
-# Wallet is stored in GitHub Secrets
+# Wallet stored in GitHub Secrets
 WALLET = os.environ["HYPERLIQUID_WALLET"]
 
 HISTORY_FILE = "account_history.csv"
@@ -92,7 +91,7 @@ def prepare_fills(df):
     df = df.copy()
 
     # --------------------------------------------------------
-    # NUMERIC
+    # NUMERIC COLUMNS
     # --------------------------------------------------------
 
     for col in [
@@ -133,6 +132,18 @@ def prepare_fills(df):
             .date
         )
 
+        df["hour"] = (
+            df["datetime_london"]
+            .dt
+            .hour
+        )
+
+        df["day"] = (
+            df["datetime_london"]
+            .dt
+            .day_name()
+        )
+
     # --------------------------------------------------------
     # NOTIONAL
     # --------------------------------------------------------
@@ -152,14 +163,18 @@ def prepare_fills(df):
         df["notional"] = 0.0
 
     # --------------------------------------------------------
-    # FEE
+    # FEE COST
     # --------------------------------------------------------
     #
-    # Keep fee completely separate.
+    # Keep the original Hyperliquid fee SIGNED.
     #
-    # We do NOT use it to calculate the actual account P&L.
+    # Example:
     #
-    # This is only for reporting.
+    # fee = -22.49
+    #
+    # For display we also create:
+    #
+    # feeCost = 22.49
     #
     # --------------------------------------------------------
 
@@ -173,6 +188,44 @@ def prepare_fills(df):
     else:
 
         df["feeCost"] = 0.0
+
+    # --------------------------------------------------------
+    # NET TRADING P&L
+    # --------------------------------------------------------
+    #
+    # IMPORTANT:
+    #
+    # Your Hyperliquid API is returning the fee as a
+    # negative signed amount.
+    #
+    # Therefore:
+    #
+    # Net Trading P&L =
+    #
+    # closedPnl + fee
+    #
+    # Example:
+    #
+    # closedPnl = +32.94
+    # fee       = -22.49
+    #
+    # Net       = +10.45
+    #
+    # --------------------------------------------------------
+
+    if (
+        "closedPnl" in df.columns
+        and "fee" in df.columns
+    ):
+
+        df["netTradingPnl"] = (
+            df["closedPnl"] +
+            df["fee"]
+        )
+
+    else:
+
+        df["netTradingPnl"] = 0.0
 
     return df
 
@@ -189,7 +242,7 @@ def prepare_funding(df):
     df = df.copy()
 
     # --------------------------------------------------------
-    # FUNDING
+    # FUNDING VALUE
     # --------------------------------------------------------
 
     if "delta" in df.columns:
@@ -201,10 +254,13 @@ def prepare_funding(df):
                 if "usdc" in x:
 
                     try:
+
                         return float(
                             x["usdc"]
                         )
+
                     except Exception:
+
                         return 0.0
 
             return 0.0
@@ -271,9 +327,13 @@ def load_history():
 
         if not df.empty:
 
-            df["date"] = pd.to_datetime(
-                df["date"]
-            ).dt.date
+            df["date"] = (
+                pd.to_datetime(
+                    df["date"]
+                )
+                .dt
+                .date
+            )
 
             df["account_value"] = pd.to_numeric(
                 df["account_value"],
@@ -311,7 +371,7 @@ def update_history(
     history = history.copy()
 
     # --------------------------------------------------------
-    # Previous account value
+    # FIND PREVIOUS ACCOUNT VALUE
     # --------------------------------------------------------
 
     previous_value = None
@@ -328,25 +388,26 @@ def update_history(
         if not previous_rows.empty:
 
             previous_value = float(
-                previous_rows.iloc[-1]
-                ["account_value"]
+                previous_rows.iloc[-1][
+                    "account_value"
+                ]
             )
 
     # --------------------------------------------------------
-    # Actual daily P&L
+    # ACTUAL DAILY P&L
     # --------------------------------------------------------
     #
-    # IMPORTANT:
+    # This is deliberately NOT calculated from:
     #
-    # This is NOT:
+    # closed P&L
+    # + fees
+    # + funding
     #
-    # closedPnl + fees + funding
+    # Instead:
     #
-    # It is simply:
-    #
-    # today's account value
+    # Today's account value
     # minus
-    # previous recorded account value
+    # previous account value
     #
     # --------------------------------------------------------
 
@@ -362,7 +423,7 @@ def update_history(
         )
 
     # --------------------------------------------------------
-    # Remove today's existing row
+    # REMOVE TODAY IF ALREADY PRESENT
     # --------------------------------------------------------
 
     history = history[
@@ -370,7 +431,7 @@ def update_history(
     ]
 
     # --------------------------------------------------------
-    # Add today's row
+    # ADD TODAY
     # --------------------------------------------------------
 
     new_row = pd.DataFrame({
@@ -403,7 +464,7 @@ def update_history(
     )
 
     # --------------------------------------------------------
-    # Save
+    # SAVE
     # --------------------------------------------------------
 
     history.to_csv(
@@ -411,7 +472,11 @@ def update_history(
         index=False
     )
 
-    return history, previous_value, daily_pnl
+    return (
+        history,
+        previous_value,
+        daily_pnl
+    )
 
 
 # ============================================================
@@ -454,6 +519,13 @@ def calculate_today_stats(
             .sum()
         )
 
+        net_trading_pnl = (
+            today_fills[
+                "netTradingPnl"
+            ]
+            .sum()
+        )
+
         volume = (
             today_fills[
                 "notional"
@@ -469,6 +541,7 @@ def calculate_today_stats(
 
         closed_pnl = 0.0
         fees = 0.0
+        net_trading_pnl = 0.0
         volume = 0.0
         fills_count = 0
 
@@ -499,6 +572,8 @@ def calculate_today_stats(
 
         "fees": fees,
 
+        "net_trading_pnl": net_trading_pnl,
+
         "funding": funding_pnl,
 
         "volume": volume,
@@ -523,6 +598,8 @@ def calculate_fill_stats(fills):
 
             "fees": 0.0,
 
+            "net_pnl": 0.0,
+
             "volume": 0.0,
 
             "winning_fills": 0,
@@ -533,35 +610,40 @@ def calculate_fill_stats(fills):
         }
 
     closed = (
-        fills["closedPnl"]
+        fills[
+            "closedPnl"
+        ]
         .fillna(0)
     )
 
     fees = (
-        fills["feeCost"]
+        fills[
+            "feeCost"
+        ]
         .fillna(0)
     )
 
     # --------------------------------------------------------
-    # IMPORTANT:
-    #
-    # We calculate this ONLY as an execution statistic.
-    #
-    # It is NOT used as actual account P&L.
-    #
+    # USE THE ACTUAL netTradingPnl COLUMN
     # --------------------------------------------------------
 
-    execution_net = (
-        closed -
-        fees
+    net_pnl = (
+        fills[
+            "netTradingPnl"
+        ]
+        .fillna(0)
     )
 
+    # --------------------------------------------------------
+    # WINNERS / LOSERS
+    # --------------------------------------------------------
+
     winners = (
-        execution_net > 0
+        net_pnl > 0
     ).sum()
 
     losers = (
-        execution_net < 0
+        net_pnl < 0
     ).sum()
 
     total = (
@@ -587,6 +669,8 @@ def calculate_fill_stats(fills):
         "closed_pnl": closed.sum(),
 
         "fees": fees.sum(),
+
+        "net_pnl": net_pnl.sum(),
 
         "volume": fills[
             "notional"
@@ -630,6 +714,11 @@ def pnl_by_coin(df):
                 "sum"
             ),
 
+            NetTradingPnL=(
+                "netTradingPnl",
+                "sum"
+            ),
+
             Volume=(
                 "notional",
                 "sum"
@@ -637,7 +726,7 @@ def pnl_by_coin(df):
         )
 
         .sort_values(
-            "ClosedPnL",
+            "NetTradingPnL",
             ascending=False
         )
     )
@@ -683,6 +772,11 @@ def long_short_stats(df):
                 "sum"
             ),
 
+            NetTradingPnL=(
+                "netTradingPnl",
+                "sum"
+            ),
+
             Volume=(
                 "notional",
                 "sum"
@@ -694,7 +788,7 @@ def long_short_stats(df):
 
 
 # ============================================================
-# DAILY CLOSED P&L HISTORY
+# DAILY CLOSED P&L
 # ============================================================
 
 def daily_closed_pnl(fills):
@@ -724,6 +818,11 @@ def daily_closed_pnl(fills):
                 "sum"
             ),
 
+            NetTradingPnL=(
+                "netTradingPnl",
+                "sum"
+            ),
+
             Volume=(
                 "notional",
                 "sum"
@@ -735,7 +834,7 @@ def daily_closed_pnl(fills):
 
 
 # ============================================================
-# MAX DRAWDOWN FROM ACTUAL ACCOUNT VALUE
+# MAX ACCOUNT DRAWDOWN
 # ============================================================
 
 def calculate_account_drawdown(
@@ -776,7 +875,6 @@ def create_report(
     history,
     previous_value,
     daily_pnl,
-    total_funding,
     max_drawdown,
     coin_stats,
     direction_stats,
@@ -784,30 +882,42 @@ def create_report(
 ):
 
     margin = (
-        account["marginSummary"]
+        account[
+            "marginSummary"
+        ]
     )
 
     account_value = float(
-        margin["accountValue"]
+        margin[
+            "accountValue"
+        ]
     )
 
     margin_used = float(
-        margin["totalMarginUsed"]
+        margin[
+            "totalMarginUsed"
+        ]
     )
 
     position_notional = float(
-        margin["totalNtlPos"]
+        margin[
+            "totalNtlPos"
+        ]
     )
 
     withdrawable = float(
-        account["withdrawable"]
+        account[
+            "withdrawable"
+        ]
     )
 
     today = (
         pd.Timestamp.now(
             tz="Europe/London"
         )
-        .strftime("%d %B %Y")
+        .strftime(
+            "%d %B %Y"
+        )
     )
 
     lines = []
@@ -899,6 +1009,10 @@ def create_report(
     )
 
     lines.append(
+        f"Net trading P&L:     ${today_stats['net_trading_pnl']:,.2f}"
+    )
+
+    lines.append(
         f"Funding:             ${today_stats['funding']:,.2f}"
     )
 
@@ -907,7 +1021,7 @@ def create_report(
     )
 
     # ========================================================
-    # IMPORTANT RECONCILIATION
+    # P&L RECONCILIATION
     # ========================================================
 
     lines.append("")
@@ -916,25 +1030,15 @@ def create_report(
     )
 
     lines.append(
-        "The figures below are shown separately."
-    )
-
-    lines.append(
-        "They are NOT added together to calculate"
-    )
-
-    lines.append(
-        "the actual daily account P&L."
-    )
-
-    lines.append("")
-
-    lines.append(
         f"Closed P&L:          ${today_stats['closed_pnl']:,.2f}"
     )
 
     lines.append(
-        f"Fees:               -${today_stats['fees']:,.2f}"
+        f"Trading fees:        -${today_stats['fees']:,.2f}"
+    )
+
+    lines.append(
+        f"Net trading P&L:     ${today_stats['net_trading_pnl']:,.2f}"
     )
 
     lines.append(
@@ -974,6 +1078,10 @@ def create_report(
 
     lines.append(
         f"Trading fees:        ${fill_stats['fees']:,.2f}"
+    )
+
+    lines.append(
+        f"Net trading P&L:     ${fill_stats['net_pnl']:,.2f}"
     )
 
     lines.append(
@@ -1054,7 +1162,7 @@ def create_report(
         )
 
     # ========================================================
-    # DAILY ACCOUNT HISTORY
+    # ACCOUNT HISTORY
     # ========================================================
 
     lines.append("")
@@ -1070,8 +1178,12 @@ def create_report(
             .copy()
         )
 
-        history_display["date"] = (
-            history_display["date"]
+        history_display[
+            "date"
+        ] = (
+            history_display[
+                "date"
+            ]
             .astype(str)
         )
 
@@ -1083,13 +1195,19 @@ def create_report(
             )
         )
 
+    else:
+
+        lines.append(
+            "No account history."
+        )
+
     # ========================================================
     # DAILY CLOSED P&L
     # ========================================================
 
     lines.append("")
     lines.append(
-        "--- RECENT CLOSED P&L ---"
+        "--- RECENT DAILY P&L ---"
     )
 
     if not daily_closed.empty:
@@ -1101,6 +1219,12 @@ def create_report(
                 float_format=lambda x:
                 f"{x:,.2f}"
             )
+        )
+
+    else:
+
+        lines.append(
+            "No daily trading data."
         )
 
     # ========================================================
@@ -1135,7 +1259,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # DOWNLOAD
+    # DOWNLOAD DATA
     # --------------------------------------------------------
 
     account = (
@@ -1159,15 +1283,19 @@ def main():
     )
 
     # --------------------------------------------------------
-    # PREPARE
+    # PREPARE DATA
     # --------------------------------------------------------
 
-    fills = prepare_fills(
-        fills
+    fills = (
+        prepare_fills(
+            fills
+        )
     )
 
-    funding = prepare_funding(
-        funding
+    funding = (
+        prepare_funding(
+            funding
+        )
     )
 
     # --------------------------------------------------------
@@ -1175,11 +1303,15 @@ def main():
     # --------------------------------------------------------
 
     margin = (
-        account["marginSummary"]
+        account[
+            "marginSummary"
+        ]
     )
 
     account_value = float(
-        margin["accountValue"]
+        margin[
+            "accountValue"
+        ]
     )
 
     # --------------------------------------------------------
@@ -1210,25 +1342,31 @@ def main():
         previous_value,
         daily_pnl
     ) = update_history(
+
         history=history,
+
         today=today,
+
         account_value=account_value
     )
 
     # --------------------------------------------------------
-    # TODAY STATS
+    # TODAY'S STATS
     # --------------------------------------------------------
 
     today_stats = (
         calculate_today_stats(
+
             fills,
+
             funding,
+
             today
         )
     )
 
     # --------------------------------------------------------
-    # ALL FILL STATS
+    # ALL-TIME STATS
     # --------------------------------------------------------
 
     fill_stats = (
@@ -1238,27 +1376,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # FUNDING
-    # --------------------------------------------------------
-
-    if (
-        funding is not None
-        and not funding.empty
-    ):
-
-        total_funding = (
-            funding[
-                "fundingPnl"
-            ]
-            .sum()
-        )
-
-    else:
-
-        total_funding = 0.0
-
-    # --------------------------------------------------------
-    # COIN
+    # COIN STATS
     # --------------------------------------------------------
 
     coin_stats = (
@@ -1315,8 +1433,6 @@ def main():
 
         daily_pnl=daily_pnl,
 
-        total_funding=total_funding,
-
         max_drawdown=max_drawdown,
 
         coin_stats=coin_stats,
@@ -1327,7 +1443,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # PRINT TO GITHUB
+    # PRINT REPORT
     # --------------------------------------------------------
 
     print("")
