@@ -219,7 +219,7 @@ def prepare_fills(df):
     ):
 
         df["netTradingPnl"] = (
-            df["closedPnl"] +
+            df["closedPnl"] -
             df["fee"]
         )
 
