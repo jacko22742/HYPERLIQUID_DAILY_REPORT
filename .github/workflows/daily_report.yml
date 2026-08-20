@@ -6,10 +6,13 @@ on:
     - cron: "30 17 * * *"
 
 jobs:
+
   daily-report:
+
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -27,3 +30,15 @@ jobs:
           HYPERLIQUID_WALLET: ${{ secrets.HYPERLIQUID_WALLET }}
         run: |
           python hyperliquid_report.py
+
+      - name: Upload daily report
+        uses: actions/upload-artifact@v4
+        with:
+          name: hyperliquid-daily-report
+          path: hyperliquid_daily_report.txt
+
+      - name: Upload account history
+        uses: actions/upload-artifact@v4
+        with:
+          name: hyperliquid-account-history
+          path: account_history.csv
