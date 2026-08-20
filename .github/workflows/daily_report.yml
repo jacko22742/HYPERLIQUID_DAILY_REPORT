@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
 
 jobs:
+
   daily-report:
 
     runs-on: ubuntu-latest
@@ -13,23 +14,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Show exactly what GitHub downloaded
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
         run: |
-          echo "===================================="
-          echo "COMMIT BEING RUN:"
-          git rev-parse HEAD
-          echo "===================================="
+          pip install requests
 
-          echo "FILES:"
-          ls -la
-
-          echo "===================================="
-          echo "PYTHON FILE:"
-          cat hyperliquid_report.py
-          echo "===================================="
-
-      - name: Run Python
+      - name: Run Hyperliquid report
         env:
           HYPERLIQUID_WALLET: ${{ secrets.HYPERLIQUID_WALLET }}
+          EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
         run: |
           python hyperliquid_report.py
