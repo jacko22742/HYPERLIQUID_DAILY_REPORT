@@ -2,6 +2,7 @@ import os
 import requests
 import pandas as pd
 import numpy as np
+from datetime import datetime
 
 
 # ============================================================
@@ -10,12 +11,15 @@ import numpy as np
 
 API_URL = "https://api.hyperliquid.xyz/info"
 
-# Wallet comes from GitHub Actions Secret
+# Wallet is stored in GitHub Secrets
 WALLET = os.environ["HYPERLIQUID_WALLET"]
+
+HISTORY_FILE = "account_history.csv"
+REPORT_FILE = "hyperliquid_daily_report.txt"
 
 
 # ============================================================
-# HYPERLIQUID API REQUEST
+# HYPERLIQUID API
 # ============================================================
 
 def hl_info(payload):
@@ -23,7 +27,9 @@ def hl_info(payload):
     response = requests.post(
         API_URL,
         json=payload,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json"
+        },
         timeout=30
     )
 
@@ -50,13 +56,13 @@ def get_account_state():
 
 def get_fills():
 
-    fills = hl_info({
+    data = hl_info({
         "type": "userFills",
         "user": WALLET,
         "aggregateByTime": False
     })
 
-    return pd.DataFrame(fills)
+    return pd.DataFrame(data)
 
 
 # ============================================================
@@ -65,13 +71,13 @@ def get_fills():
 
 def get_funding():
 
-    funding = hl_info({
+    data = hl_info({
         "type": "userFunding",
         "user": WALLET,
         "startTime": 0
     })
 
-    return pd.DataFrame(funding)
+    return pd.DataFrame(data)
 
 
 # ============================================================
@@ -86,7 +92,7 @@ def prepare_fills(df):
     df = df.copy()
 
     # --------------------------------------------------------
-    # NUMERIC COLUMNS
+    # NUMERIC
     # --------------------------------------------------------
 
     for col in [
@@ -127,18 +133,6 @@ def prepare_fills(df):
             .date
         )
 
-        df["hour"] = (
-            df["datetime_london"]
-            .dt
-            .hour
-        )
-
-        df["day"] = (
-            df["datetime_london"]
-            .dt
-            .day_name()
-        )
-
     # --------------------------------------------------------
     # NOTIONAL
     # --------------------------------------------------------
@@ -161,48 +155,24 @@ def prepare_fills(df):
     # FEE
     # --------------------------------------------------------
     #
-    # IMPORTANT:
+    # Keep fee completely separate.
     #
-    # Hyperliquid fee represents a COST.
+    # We do NOT use it to calculate the actual account P&L.
     #
-    # We use ABS() so that regardless of whether the API
-    # returns:
-    #
-    #     fee = 2.50
-    #
-    # or:
-    #
-    #     fee = -2.50
-    #
-    # the cost is always treated as:
-    #
-    #     -2.50
+    # This is only for reporting.
     #
     # --------------------------------------------------------
 
-    df["feeCost"] = (
-        df["fee"]
-        .abs()
-    )
+    if "fee" in df.columns:
 
-    # --------------------------------------------------------
-    # NET TRADING P&L
-    # --------------------------------------------------------
-    #
-    # Closed P&L is the realised trading result.
-    #
-    # Fees are a cost.
-    #
-    # Therefore:
-    #
-    # NET = CLOSED P&L - FEE COST
-    #
-    # --------------------------------------------------------
+        df["feeCost"] = (
+            df["fee"]
+            .abs()
+        )
 
-    df["netTradingPnl"] = (
-        df["closedPnl"] -
-        df["feeCost"]
-    )
+    else:
+
+        df["feeCost"] = 0.0
 
     return df
 
@@ -219,7 +189,7 @@ def prepare_funding(df):
     df = df.copy()
 
     # --------------------------------------------------------
-    # HYPERLIQUID FUNDING
+    # FUNDING
     # --------------------------------------------------------
 
     if "delta" in df.columns:
@@ -276,161 +246,358 @@ def prepare_funding(df):
 
 
 # ============================================================
-# BASIC STATISTICS
+# ACCOUNT HISTORY
 # ============================================================
 
-def calculate_stats(df):
+def load_history():
 
-    stats = {}
+    if not os.path.exists(
+        HISTORY_FILE
+    ):
 
-    if df.empty:
-        return stats
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "account_value",
+                "daily_pnl"
+            ]
+        )
 
-    gross_pnl = (
-        df["closedPnl"]
-        .fillna(0)
+    try:
+
+        df = pd.read_csv(
+            HISTORY_FILE
+        )
+
+        if not df.empty:
+
+            df["date"] = pd.to_datetime(
+                df["date"]
+            ).dt.date
+
+            df["account_value"] = pd.to_numeric(
+                df["account_value"],
+                errors="coerce"
+            )
+
+            df["daily_pnl"] = pd.to_numeric(
+                df["daily_pnl"],
+                errors="coerce"
+            )
+
+        return df
+
+    except Exception:
+
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "account_value",
+                "daily_pnl"
+            ]
+        )
+
+
+# ============================================================
+# UPDATE ACCOUNT HISTORY
+# ============================================================
+
+def update_history(
+    history,
+    today,
+    account_value
+):
+
+    history = history.copy()
+
+    # --------------------------------------------------------
+    # Previous account value
+    # --------------------------------------------------------
+
+    previous_value = None
+
+    if not history.empty:
+
+        previous_rows = (
+            history[
+                history["date"] < today
+            ]
+            .sort_values("date")
+        )
+
+        if not previous_rows.empty:
+
+            previous_value = float(
+                previous_rows.iloc[-1]
+                ["account_value"]
+            )
+
+    # --------------------------------------------------------
+    # Actual daily P&L
+    # --------------------------------------------------------
+    #
+    # IMPORTANT:
+    #
+    # This is NOT:
+    #
+    # closedPnl + fees + funding
+    #
+    # It is simply:
+    #
+    # today's account value
+    # minus
+    # previous recorded account value
+    #
+    # --------------------------------------------------------
+
+    if previous_value is None:
+
+        daily_pnl = np.nan
+
+    else:
+
+        daily_pnl = (
+            account_value -
+            previous_value
+        )
+
+    # --------------------------------------------------------
+    # Remove today's existing row
+    # --------------------------------------------------------
+
+    history = history[
+        history["date"] != today
+    ]
+
+    # --------------------------------------------------------
+    # Add today's row
+    # --------------------------------------------------------
+
+    new_row = pd.DataFrame({
+
+        "date": [
+            today
+        ],
+
+        "account_value": [
+            account_value
+        ],
+
+        "daily_pnl": [
+            daily_pnl
+        ]
+    })
+
+    history = pd.concat(
+        [
+            history,
+            new_row
+        ],
+        ignore_index=True
     )
 
-    fees = (
-        df["feeCost"]
-        .fillna(0)
-    )
-
-    net_pnl = (
-        df["netTradingPnl"]
-        .fillna(0)
-    )
-
-    stats["Total fills"] = len(df)
-
-    # --------------------------------------------------------
-    # GROSS P&L
-    # --------------------------------------------------------
-
-    stats["Gross realised P&L"] = (
-        gross_pnl.sum()
+    history = (
+        history
+        .sort_values("date")
+        .reset_index(drop=True)
     )
 
     # --------------------------------------------------------
-    # FEES
+    # Save
     # --------------------------------------------------------
 
-    stats["Total trading fees"] = (
-        fees.sum()
+    history.to_csv(
+        HISTORY_FILE,
+        index=False
     )
 
-    # --------------------------------------------------------
-    # NET P&L
-    # --------------------------------------------------------
+    return history, previous_value, daily_pnl
 
-    stats["Net trading P&L"] = (
-        net_pnl.sum()
-    )
 
-    # --------------------------------------------------------
-    # PROFIT / LOSS
-    # --------------------------------------------------------
+# ============================================================
+# TODAY'S TRADING DATA
+# ============================================================
 
-    stats["Gross profit"] = (
-        net_pnl[
-            net_pnl > 0
-        ].sum()
-    )
-
-    stats["Gross loss"] = (
-        net_pnl[
-            net_pnl < 0
-        ].sum()
-    )
+def calculate_today_stats(
+    fills,
+    funding,
+    today
+):
 
     # --------------------------------------------------------
-    # WINNING / LOSING FILLS
+    # FILLS
     # --------------------------------------------------------
 
-    stats["Winning fills"] = (
-        net_pnl > 0
-    ).sum()
+    if not fills.empty:
 
-    stats["Losing fills"] = (
-        net_pnl < 0
-    ).sum()
+        today_fills = fills[
+            fills["date"] == today
+        ]
 
-    total_decided = (
-        stats["Winning fills"] +
-        stats["Losing fills"]
-    )
+    else:
 
-    stats["Win rate"] = (
-        stats["Winning fills"] /
-        max(total_decided, 1)
-    )
+        today_fills = pd.DataFrame()
 
-    # --------------------------------------------------------
-    # PROFIT FACTOR
-    # --------------------------------------------------------
+    if not today_fills.empty:
 
-    if abs(stats["Gross loss"]) > 0:
+        closed_pnl = (
+            today_fills[
+                "closedPnl"
+            ]
+            .sum()
+        )
 
-        stats["Profit factor"] = (
-            stats["Gross profit"] /
-            abs(stats["Gross loss"])
+        fees = (
+            today_fills[
+                "feeCost"
+            ]
+            .sum()
+        )
+
+        volume = (
+            today_fills[
+                "notional"
+            ]
+            .sum()
+        )
+
+        fills_count = len(
+            today_fills
         )
 
     else:
 
-        stats["Profit factor"] = np.inf
+        closed_pnl = 0.0
+        fees = 0.0
+        volume = 0.0
+        fills_count = 0
 
     # --------------------------------------------------------
-    # AVERAGES
+    # FUNDING
     # --------------------------------------------------------
 
-    stats["Average net fill P&L"] = (
-        net_pnl.mean()
+    if not funding.empty:
+
+        today_funding = funding[
+            funding["date"] == today
+        ]
+
+        funding_pnl = (
+            today_funding[
+                "fundingPnl"
+            ]
+            .sum()
+        )
+
+    else:
+
+        funding_pnl = 0.0
+
+    return {
+
+        "closed_pnl": closed_pnl,
+
+        "fees": fees,
+
+        "funding": funding_pnl,
+
+        "volume": volume,
+
+        "fills": fills_count
+    }
+
+
+# ============================================================
+# ALL-TIME FILL STATISTICS
+# ============================================================
+
+def calculate_fill_stats(fills):
+
+    if fills.empty:
+
+        return {
+
+            "fills": 0,
+
+            "closed_pnl": 0.0,
+
+            "fees": 0.0,
+
+            "volume": 0.0,
+
+            "winning_fills": 0,
+
+            "losing_fills": 0,
+
+            "win_rate": 0.0
+        }
+
+    closed = (
+        fills["closedPnl"]
+        .fillna(0)
     )
 
-    stats["Average winner"] = (
-
-        net_pnl[
-            net_pnl > 0
-        ].mean()
-
-        if (
-            net_pnl > 0
-        ).any()
-
-        else 0
-    )
-
-    stats["Average loser"] = (
-
-        net_pnl[
-            net_pnl < 0
-        ].mean()
-
-        if (
-            net_pnl < 0
-        ).any()
-
-        else 0
-    )
-
-    stats["Largest winner"] = (
-        net_pnl.max()
-    )
-
-    stats["Largest loser"] = (
-        net_pnl.min()
+    fees = (
+        fills["feeCost"]
+        .fillna(0)
     )
 
     # --------------------------------------------------------
-    # VOLUME
+    # IMPORTANT:
+    #
+    # We calculate this ONLY as an execution statistic.
+    #
+    # It is NOT used as actual account P&L.
+    #
     # --------------------------------------------------------
 
-    stats["Total volume"] = (
-        df["notional"].sum()
+    execution_net = (
+        closed -
+        fees
     )
 
-    return stats
+    winners = (
+        execution_net > 0
+    ).sum()
+
+    losers = (
+        execution_net < 0
+    ).sum()
+
+    total = (
+        winners +
+        losers
+    )
+
+    if total > 0:
+
+        win_rate = (
+            winners /
+            total
+        )
+
+    else:
+
+        win_rate = 0.0
+
+    return {
+
+        "fills": len(fills),
+
+        "closed_pnl": closed.sum(),
+
+        "fees": fees.sum(),
+
+        "volume": fills[
+            "notional"
+        ].sum(),
+
+        "winning_fills": winners,
+
+        "losing_fills": losers,
+
+        "win_rate": win_rate
+    }
 
 
 # ============================================================
@@ -453,18 +620,13 @@ def pnl_by_coin(df):
                 "count"
             ),
 
-            GrossPnL=(
+            ClosedPnL=(
                 "closedPnl",
                 "sum"
             ),
 
             Fees=(
                 "feeCost",
-                "sum"
-            ),
-
-            NetPnL=(
-                "netTradingPnl",
                 "sum"
             ),
 
@@ -475,7 +637,7 @@ def pnl_by_coin(df):
         )
 
         .sort_values(
-            "NetPnL",
+            "ClosedPnL",
             ascending=False
         )
     )
@@ -500,7 +662,7 @@ def long_short_stats(df):
         "Short"
     )
 
-    return (
+    result = (
 
         df.groupby("direction")
 
@@ -511,18 +673,13 @@ def long_short_stats(df):
                 "count"
             ),
 
-            GrossPnL=(
+            ClosedPnL=(
                 "closedPnl",
                 "sum"
             ),
 
             Fees=(
                 "feeCost",
-                "sum"
-            ),
-
-            NetPnL=(
-                "netTradingPnl",
                 "sum"
             ),
 
@@ -533,22 +690,18 @@ def long_short_stats(df):
         )
     )
 
+    return result
+
 
 # ============================================================
-# DAILY P&L
+# DAILY CLOSED P&L HISTORY
 # ============================================================
 
-def daily_pnl(
-    fills,
-    funding
-):
+def daily_closed_pnl(fills):
 
     if fills.empty:
-        return pd.DataFrame()
 
-    # --------------------------------------------------------
-    # TRADING P&L
-    # --------------------------------------------------------
+        return pd.DataFrame()
 
     daily = (
 
@@ -561,18 +714,13 @@ def daily_pnl(
                 "count"
             ),
 
-            GrossPnL=(
+            ClosedPnL=(
                 "closedPnl",
                 "sum"
             ),
 
             Fees=(
                 "feeCost",
-                "sum"
-            ),
-
-            NetTradingPnL=(
-                "netTradingPnl",
                 "sum"
             ),
 
@@ -583,70 +731,34 @@ def daily_pnl(
         )
     )
 
-    # --------------------------------------------------------
-    # FUNDING
-    # --------------------------------------------------------
-
-    if (
-        funding is not None
-        and not funding.empty
-    ):
-
-        funding_daily = (
-
-            funding
-            .groupby("date")
-            ["fundingPnl"]
-            .sum()
-            .rename("FundingPnL")
-        )
-
-        daily = daily.join(
-            funding_daily,
-            how="left"
-        )
-
-    else:
-
-        daily["FundingPnL"] = 0.0
-
-    daily["FundingPnL"] = (
-        daily["FundingPnL"]
-        .fillna(0)
-    )
-
-    # --------------------------------------------------------
-    # TOTAL NET P&L
-    # --------------------------------------------------------
-
-    daily["NetPnL"] = (
-        daily["NetTradingPnL"] +
-        daily["FundingPnL"]
-    )
-
     return daily.sort_index()
 
 
 # ============================================================
-# MAX DRAWDOWN
+# MAX DRAWDOWN FROM ACTUAL ACCOUNT VALUE
 # ============================================================
 
-def calculate_drawdown(daily):
+def calculate_account_drawdown(
+    history
+):
 
-    if daily.empty:
+    if history.empty:
+
         return 0.0
 
-    equity = (
-        daily["NetPnL"]
-        .cumsum()
+    values = (
+        history
+        .sort_values("date")
+        ["account_value"]
     )
 
     running_max = (
-        equity.cummax()
+        values
+        .cummax()
     )
 
     drawdown = (
-        equity -
+        values -
         running_max
     )
 
@@ -659,17 +771,21 @@ def calculate_drawdown(daily):
 
 def create_report(
     account,
-    stats,
+    today_stats,
+    fill_stats,
+    history,
+    previous_value,
+    daily_pnl,
     total_funding,
-    max_dd,
+    max_drawdown,
     coin_stats,
     direction_stats,
-    daily
+    daily_closed
 ):
 
-    margin = account[
-        "marginSummary"
-    ]
+    margin = (
+        account["marginSummary"]
+    )
 
     account_value = float(
         margin["accountValue"]
@@ -687,16 +803,7 @@ def create_report(
         account["withdrawable"]
     )
 
-    # --------------------------------------------------------
-    # TOTAL NET P&L
-    # --------------------------------------------------------
-
-    net_total = (
-        stats["Net trading P&L"] +
-        total_funding
-    )
-
-    report_date = (
+    today = (
         pd.Timestamp.now(
             tz="Europe/London"
         )
@@ -704,6 +811,10 @@ def create_report(
     )
 
     lines = []
+
+    # ========================================================
+    # HEADER
+    # ========================================================
 
     lines.append(
         "=" * 70
@@ -714,7 +825,7 @@ def create_report(
     )
 
     lines.append(
-        report_date
+        today
     )
 
     lines.append(
@@ -726,11 +837,33 @@ def create_report(
     # ========================================================
 
     lines.append("")
-    lines.append("--- ACCOUNT ---")
+    lines.append(
+        "--- ACCOUNT ---"
+    )
 
     lines.append(
         f"Account value:       ${account_value:,.2f}"
     )
+
+    if previous_value is not None:
+
+        lines.append(
+            f"Previous value:      ${previous_value:,.2f}"
+        )
+
+        lines.append(
+            f"ACTUAL DAILY P&L:    ${daily_pnl:,.2f}"
+        )
+
+    else:
+
+        lines.append(
+            "Previous value:      N/A - first day"
+        )
+
+        lines.append(
+            "ACTUAL DAILY P&L:    N/A - first day"
+        )
 
     lines.append(
         f"Margin used:         ${margin_used:,.2f}"
@@ -745,68 +878,118 @@ def create_report(
     )
 
     # ========================================================
-    # TRADING
+    # TODAY'S TRADING
     # ========================================================
 
     lines.append("")
-    lines.append("--- TRADING ---")
-
     lines.append(
-        f"Total fills:         {stats['Total fills']}"
+        "--- TODAY'S TRADING ---"
     )
 
     lines.append(
-        f"Gross realised P&L:  ${stats['Gross realised P&L']:,.2f}"
+        f"Fills:               {today_stats['fills']}"
     )
 
     lines.append(
-        f"Trading fees:        -${stats['Total trading fees']:,.2f}"
+        f"Closed P&L:          ${today_stats['closed_pnl']:,.2f}"
     )
 
     lines.append(
-        f"Net trading P&L:     ${stats['Net trading P&L']:,.2f}"
+        f"Trading fees:        ${today_stats['fees']:,.2f}"
     )
 
     lines.append(
-        f"Funding P&L:         ${total_funding:,.2f}"
+        f"Funding:             ${today_stats['funding']:,.2f}"
     )
 
     lines.append(
-        f"NET P&L:             ${net_total:,.2f}"
+        f"Volume:              ${today_stats['volume']:,.2f}"
+    )
+
+    # ========================================================
+    # IMPORTANT RECONCILIATION
+    # ========================================================
+
+    lines.append("")
+    lines.append(
+        "--- P&L RECONCILIATION ---"
     )
 
     lines.append(
-        f"Win rate:            {stats['Win rate']:.2%}"
+        "The figures below are shown separately."
     )
 
-    if np.isinf(
-        stats["Profit factor"]
-    ):
+    lines.append(
+        "They are NOT added together to calculate"
+    )
+
+    lines.append(
+        "the actual daily account P&L."
+    )
+
+    lines.append("")
+
+    lines.append(
+        f"Closed P&L:          ${today_stats['closed_pnl']:,.2f}"
+    )
+
+    lines.append(
+        f"Fees:               -${today_stats['fees']:,.2f}"
+    )
+
+    lines.append(
+        f"Funding:             ${today_stats['funding']:,.2f}"
+    )
+
+    lines.append("")
+
+    if daily_pnl is not None:
 
         lines.append(
-            "Profit factor:       Infinite"
+            f"ACTUAL ACCOUNT P&L: ${daily_pnl:,.2f}"
         )
 
     else:
 
         lines.append(
-            f"Profit factor:       {stats['Profit factor']:.2f}"
+            "ACTUAL ACCOUNT P&L: N/A"
         )
 
+    # ========================================================
+    # ALL TIME
+    # ========================================================
+
+    lines.append("")
     lines.append(
-        f"Average fill P&L:    ${stats['Average net fill P&L']:,.2f}"
+        "--- ALL-TIME FILL STATISTICS ---"
     )
 
     lines.append(
-        f"Largest winner:      ${stats['Largest winner']:,.2f}"
+        f"Total fills:         {fill_stats['fills']}"
     )
 
     lines.append(
-        f"Largest loser:       ${stats['Largest loser']:,.2f}"
+        f"Closed P&L:          ${fill_stats['closed_pnl']:,.2f}"
     )
 
     lines.append(
-        f"Total volume:        ${stats['Total volume']:,.2f}"
+        f"Trading fees:        ${fill_stats['fees']:,.2f}"
+    )
+
+    lines.append(
+        f"Total volume:        ${fill_stats['volume']:,.2f}"
+    )
+
+    lines.append(
+        f"Winning fills:       {fill_stats['winning_fills']}"
+    )
+
+    lines.append(
+        f"Losing fills:        {fill_stats['losing_fills']}"
+    )
+
+    lines.append(
+        f"Win rate:            {fill_stats['win_rate']:.2%}"
     )
 
     # ========================================================
@@ -814,18 +997,22 @@ def create_report(
     # ========================================================
 
     lines.append("")
-    lines.append("--- RISK ---")
+    lines.append(
+        "--- RISK ---"
+    )
 
     lines.append(
-        f"Maximum drawdown:    ${max_dd:,.2f}"
+        f"Account max drawdown: ${max_drawdown:,.2f}"
     )
 
     # ========================================================
-    # COIN
+    # BY COIN
     # ========================================================
 
     lines.append("")
-    lines.append("--- BY COIN ---")
+    lines.append(
+        "--- BY COIN ---"
+    )
 
     if not coin_stats.empty:
 
@@ -847,7 +1034,9 @@ def create_report(
     # ========================================================
 
     lines.append("")
-    lines.append("--- LONG / SHORT ---")
+    lines.append(
+        "--- LONG / SHORT ---"
+    )
 
     if not direction_stats.empty:
 
@@ -865,28 +1054,68 @@ def create_report(
         )
 
     # ========================================================
-    # DAILY
+    # DAILY ACCOUNT HISTORY
     # ========================================================
 
     lines.append("")
-    lines.append("--- RECENT DAILY P&L ---")
+    lines.append(
+        "--- ACCOUNT VALUE HISTORY ---"
+    )
 
-    if not daily.empty:
+    if not history.empty:
+
+        history_display = (
+            history
+            .tail(20)
+            .copy()
+        )
+
+        history_display["date"] = (
+            history_display["date"]
+            .astype(str)
+        )
 
         lines.append(
-            daily.tail(20).to_string(
+            history_display.to_string(
+                index=False,
                 float_format=lambda x:
                 f"{x:,.2f}"
             )
         )
 
-    else:
-
-        lines.append(
-            "No daily data."
-        )
+    # ========================================================
+    # DAILY CLOSED P&L
+    # ========================================================
 
     lines.append("")
+    lines.append(
+        "--- RECENT CLOSED P&L ---"
+    )
+
+    if not daily_closed.empty:
+
+        lines.append(
+            daily_closed
+            .tail(20)
+            .to_string(
+                float_format=lambda x:
+                f"{x:,.2f}"
+            )
+        )
+
+    # ========================================================
+    # FOOTER
+    # ========================================================
+
+    lines.append("")
+    lines.append(
+        "=" * 70
+    )
+
+    lines.append(
+        "END OF REPORT"
+    )
+
     lines.append(
         "=" * 70
     )
@@ -900,19 +1129,26 @@ def create_report(
 
 def main():
 
+    print("")
     print(
-        "\nConnecting to Hyperliquid..."
+        "Connecting to Hyperliquid..."
     )
 
     # --------------------------------------------------------
     # DOWNLOAD
     # --------------------------------------------------------
 
-    account = get_account_state()
+    account = (
+        get_account_state()
+    )
 
-    fills = get_fills()
+    fills = (
+        get_fills()
+    )
 
-    funding = get_funding()
+    funding = (
+        get_funding()
+    )
 
     print(
         f"Downloaded {len(fills)} fills."
@@ -935,56 +1171,70 @@ def main():
     )
 
     # --------------------------------------------------------
-    # DEBUG CHECK
+    # ACCOUNT VALUE
     # --------------------------------------------------------
 
-    print("\n")
-    print("=" * 70)
-    print("P&L / FEE CHECK")
-    print("=" * 70)
-
-    print(
-        f"Closed P&L:          "
-        f"${fills['closedPnl'].sum():,.2f}"
+    margin = (
+        account["marginSummary"]
     )
 
-    print(
-        f"Fee cost:            "
-        f"${fills['feeCost'].sum():,.2f}"
+    account_value = float(
+        margin["accountValue"]
     )
-
-    print(
-        f"NET TRADING P&L:     "
-        f"${fills['netTradingPnl'].sum():,.2f}"
-    )
-
-    print("=" * 70)
 
     # --------------------------------------------------------
-    # STATS
+    # TODAY
     # --------------------------------------------------------
 
-    stats = calculate_stats(
-        fills
+    today = (
+        pd.Timestamp.now(
+            tz="Europe/London"
+        )
+        .date()
     )
 
-    daily = daily_pnl(
-        fills,
-        funding
+    # --------------------------------------------------------
+    # LOAD HISTORY
+    # --------------------------------------------------------
+
+    history = (
+        load_history()
     )
 
-    coin_stats = pnl_by_coin(
-        fills
+    # --------------------------------------------------------
+    # UPDATE HISTORY
+    # --------------------------------------------------------
+
+    (
+        history,
+        previous_value,
+        daily_pnl
+    ) = update_history(
+        history=history,
+        today=today,
+        account_value=account_value
     )
 
-    direction_stats = (
-        long_short_stats(
-            fills
+    # --------------------------------------------------------
+    # TODAY STATS
+    # --------------------------------------------------------
+
+    today_stats = (
+        calculate_today_stats(
+            fills,
+            funding,
+            today
         )
     )
 
-    max_dd = calculate_drawdown(
-        daily
+    # --------------------------------------------------------
+    # ALL FILL STATS
+    # --------------------------------------------------------
+
+    fill_stats = (
+        calculate_fill_stats(
+            fills
+        )
     )
 
     # --------------------------------------------------------
@@ -997,7 +1247,9 @@ def main():
     ):
 
         total_funding = (
-            funding["fundingPnl"]
+            funding[
+                "fundingPnl"
+            ]
             .sum()
         )
 
@@ -1006,36 +1258,87 @@ def main():
         total_funding = 0.0
 
     # --------------------------------------------------------
-    # REPORT
+    # COIN
     # --------------------------------------------------------
 
-    report = create_report(
-        account=account,
-        stats=stats,
-        total_funding=total_funding,
-        max_dd=max_dd,
-        coin_stats=coin_stats,
-        direction_stats=direction_stats,
-        daily=daily
+    coin_stats = (
+        pnl_by_coin(
+            fills
+        )
     )
 
     # --------------------------------------------------------
-    # PRINT
+    # LONG / SHORT
+    # --------------------------------------------------------
+
+    direction_stats = (
+        long_short_stats(
+            fills
+        )
+    )
+
+    # --------------------------------------------------------
+    # DAILY CLOSED P&L
+    # --------------------------------------------------------
+
+    daily_closed = (
+        daily_closed_pnl(
+            fills
+        )
+    )
+
+    # --------------------------------------------------------
+    # DRAWDOWN
+    # --------------------------------------------------------
+
+    max_drawdown = (
+        calculate_account_drawdown(
+            history
+        )
+    )
+
+    # --------------------------------------------------------
+    # CREATE REPORT
+    # --------------------------------------------------------
+
+    report = create_report(
+
+        account=account,
+
+        today_stats=today_stats,
+
+        fill_stats=fill_stats,
+
+        history=history,
+
+        previous_value=previous_value,
+
+        daily_pnl=daily_pnl,
+
+        total_funding=total_funding,
+
+        max_drawdown=max_drawdown,
+
+        coin_stats=coin_stats,
+
+        direction_stats=direction_stats,
+
+        daily_closed=daily_closed
+    )
+
+    # --------------------------------------------------------
+    # PRINT TO GITHUB
     # --------------------------------------------------------
 
     print("")
     print(report)
 
     # --------------------------------------------------------
-    # SAVE FILE
+    # SAVE REPORT
     # --------------------------------------------------------
 
-    filename = (
-        "hyperliquid_daily_report.txt"
-    )
-
     with open(
-        filename,
+        REPORT_FILE,
         "w",
         encoding="utf-8"
     ) as f:
@@ -1044,7 +1347,11 @@ def main():
 
     print("")
     print(
-        f"Report saved as {filename}"
+        f"Report saved as {REPORT_FILE}"
+    )
+
+    print(
+        f"History saved as {HISTORY_FILE}"
     )
 
 
@@ -1053,4 +1360,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
