@@ -1,1 +1,34 @@
+name: Hyperliquid Daily Report
 
+on:
+  schedule:
+    - cron: "30 18 * * *"
+      timezone: "Europe/London"
+
+  workflow_dispatch:
+
+jobs:
+
+  daily-report:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests pandas numpy
+
+      - name: Run Hyperliquid report
+        env:
+          HYPERLIQUID_WALLET: ${{ secrets.HYPERLIQUID_WALLET }}
+        run: |
+          python hyperliquid_report.py
