@@ -51,23 +51,7 @@ def hl_request(payload):
 
 
 # ============================================================
-# CHECK WALLET
-# ============================================================
-
-print("=" * 60)
-print("HYPERLIQUID DEBUG")
-print("=" * 60)
-
-print(f"Wallet being queried:")
-print(WALLET)
-
-print(f"Wallet length: {len(WALLET)}")
-
-print()
-
-
-# ============================================================
-# GET ACCOUNT STATE
+# ACCOUNT STATE
 # ============================================================
 
 account = hl_request({
@@ -76,16 +60,17 @@ account = hl_request({
 })
 
 
-print("RAW ACCOUNT RESPONSE:")
-print(account)
-print()
-
-
-# ============================================================
-# ACCOUNT VALUE / EQUITY
-# ============================================================
-
 margin = account.get("marginSummary", {})
+
+cross_margin = account.get(
+    "crossMarginSummary",
+    {}
+)
+
+
+# ============================================================
+# ACCOUNT VALUES
+# ============================================================
 
 account_value = float(
     margin.get("accountValue", 0)
@@ -104,30 +89,18 @@ withdrawable = float(
 )
 
 
-positions = account.get("assetPositions", [])
+# ============================================================
+# POSITIONS
+# ============================================================
 
-
-print("ACCOUNT VALUES")
-print("-" * 60)
-
-print(f"Account Value:   ${account_value:,.2f}")
-print(f"Position Value:  ${position_value:,.2f}")
-print(f"Margin Used:     ${margin_used:,.2f}")
-print(f"Withdrawable:    ${withdrawable:,.2f}")
-
-print()
-
-print(f"Open positions returned: {len(positions)}")
-
-for position in positions:
-
-    print(position)
-
-print()
+positions = account.get(
+    "assetPositions",
+    []
+)
 
 
 # ============================================================
-# GET FILLS
+# FILLS
 # ============================================================
 
 fills = hl_request({
@@ -135,50 +108,6 @@ fills = hl_request({
     "user": WALLET,
     "aggregateByTime": False
 })
-
-
-print("=" * 60)
-print("FILL INFORMATION")
-print("=" * 60)
-
-print(f"Total fills returned: {len(fills)}")
-
-print()
-
-
-# ============================================================
-# SHOW LATEST FILLS
-# ============================================================
-
-if fills:
-
-    print("LATEST FILLS:")
-    print("-" * 60)
-
-    for fill in fills[:10]:
-
-        fill_time = datetime.fromtimestamp(
-            fill["time"] / 1000,
-            timezone.utc
-        )
-
-        print(
-            fill_time,
-            fill.get("coin"),
-            fill.get("side"),
-            fill.get("sz"),
-            "closedPnl=",
-            fill.get("closedPnl"),
-            "fee=",
-            fill.get("fee")
-        )
-
-else:
-
-    print("NO FILLS RETURNED")
-
-
-print()
 
 
 # ============================================================
@@ -191,7 +120,8 @@ today = datetime.now(
 
 
 today_fills = [
-    x for x in fills
+    x
+    for x in fills
     if datetime.fromtimestamp(
         x["time"] / 1000,
         timezone.utc
@@ -199,25 +129,19 @@ today_fills = [
 ]
 
 
-print("=" * 60)
-print("TODAY")
-print("=" * 60)
-
-print(f"UTC date: {today}")
-print(f"Today's fills: {len(today_fills)}")
-
-print()
-
-
 # ============================================================
-# P&L
+# REALISED P&L
 # ============================================================
 
-closed_pnl = sum(
+realised_pnl = sum(
     float(x.get("closedPnl", 0))
     for x in today_fills
 )
 
+
+# ============================================================
+# FEES
+# ============================================================
 
 fees = sum(
     abs(float(x.get("fee", 0)))
@@ -225,7 +149,60 @@ fees = sum(
 )
 
 
-net_pnl = closed_pnl - fees
+# ============================================================
+# NET P&L
+# ============================================================
+
+net_pnl = realised_pnl - fees
+
+
+# ============================================================
+# TRADE BREAKDOWN
+# ============================================================
+
+long_entries = 0
+short_entries = 0
+
+long_reductions = 0
+short_reductions = 0
+
+
+for fill in today_fills:
+
+    side = str(
+        fill.get("side", "")
+    ).upper()
+
+    closed_pnl = float(
+        fill.get("closedPnl", 0)
+    )
+
+    # Hyperliquid sides:
+    #
+    # B = Buy
+    # A = Sell
+    #
+    # A fill with non-zero closedPnl
+    # generally represents reduction/closure
+    #
+    # B fill with non-zero closedPnl
+    # generally represents reduction/closure
+
+
+    if side in ("B", "BUY"):
+
+        if abs(closed_pnl) > 0:
+            long_reductions += 1
+        else:
+            long_entries += 1
+
+
+    elif side in ("A", "SELL"):
+
+        if abs(closed_pnl) > 0:
+            short_reductions += 1
+        else:
+            short_entries += 1
 
 
 # ============================================================
@@ -237,6 +214,7 @@ HYPERLIQUID DAILY REPORT
 ========================
 
 Date: {today}
+
 
 ACCOUNT
 -------
@@ -250,26 +228,22 @@ Withdrawable:           ${withdrawable:,.2f}
 TODAY'S TRADING
 ---------------
 
-Trades/Fills:           {len(today_fills)}
-Closed P&L:             ${closed_pnl:,.2f}
+Fills:                  {len(today_fills)}
+
+Long Entries:           {long_entries}
+Short Entries:          {short_entries}
+
+Long Reductions:        {long_reductions}
+Short Reductions:       {short_reductions}
+
+
+P&L
+---
+
+Realised P&L:           ${realised_pnl:,.2f}
 Trading Fees:           ${fees:,.2f}
+
 NET P&L:                ${net_pnl:,.2f}
-
-
-DEBUG
------
-
-Wallet:
-{WALLET}
-
-Total fills returned:
-{len(fills)}
-
-Today's fills:
-{len(today_fills)}
-
-Open positions:
-{len(positions)}
 """
 
 
@@ -280,7 +254,9 @@ print(report)
 # SEND EMAIL
 # ============================================================
 
-subject = f"Hyperliquid Daily Report - {today}"
+subject = (
+    f"Hyperliquid Daily Report - {today}"
+)
 
 
 params = {
@@ -293,14 +269,20 @@ params = {
 
 try:
 
-    email = resend.Emails.send(params)
+    email = resend.Emails.send(
+        params
+    )
 
-    print("Email sent successfully.")
-    print(email)
+    print(
+        "Email sent successfully."
+    )
 
 except Exception as e:
 
-    print("Failed to send email.")
+    print(
+        "Failed to send email."
+    )
+
     print(e)
 
     raise
