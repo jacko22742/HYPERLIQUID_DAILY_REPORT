@@ -1,13 +1,10 @@
-# cron wake 2
-
 name: Hyperliquid Daily Report
 
 # Scheduled Hyperliquid report
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
-
+    - cron: "0 17 * * *"   # Runs at 6 PM London time (BST)
   workflow_dispatch:
 
 jobs:
@@ -33,6 +30,5 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
-
         run: |
           python hyperliquid_report.py
