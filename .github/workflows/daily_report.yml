@@ -2,8 +2,7 @@ name: Hyperliquid Daily Report
 
 on:
   schedule:
-    - cron: "00 10 * * *"
-      timezone: "Europe/London"
+    - cron: "*/5 * * * *"
 
   workflow_dispatch:
 
