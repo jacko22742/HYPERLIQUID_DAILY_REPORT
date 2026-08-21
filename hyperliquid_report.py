@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 # SETTINGS
 # ============================================================
 
-WALLET = os.environ["HYPERLIQUID_WALLET"]
+WALLET = os.environ["HYPERLIQUID_WALLET"].strip()
 
 RESEND_API_KEY = os.environ["RESEND_API_KEY"]
 EMAIL_FROM = os.environ["EMAIL_FROM"]
@@ -51,7 +51,23 @@ def hl_request(payload):
 
 
 # ============================================================
-# GET ACCOUNT VALUE / EQUITY
+# CHECK WALLET
+# ============================================================
+
+print("=" * 60)
+print("HYPERLIQUID DEBUG")
+print("=" * 60)
+
+print(f"Wallet being queried:")
+print(WALLET)
+
+print(f"Wallet length: {len(WALLET)}")
+
+print()
+
+
+# ============================================================
+# GET ACCOUNT STATE
 # ============================================================
 
 account = hl_request({
@@ -60,23 +76,54 @@ account = hl_request({
 })
 
 
-margin = account["marginSummary"]
+print("RAW ACCOUNT RESPONSE:")
+print(account)
+print()
+
+
+# ============================================================
+# ACCOUNT VALUE / EQUITY
+# ============================================================
+
+margin = account.get("marginSummary", {})
 
 account_value = float(
-    margin["accountValue"]
+    margin.get("accountValue", 0)
 )
 
 margin_used = float(
-    margin["totalMarginUsed"]
+    margin.get("totalMarginUsed", 0)
 )
 
 position_value = float(
-    margin["totalNtlPos"]
+    margin.get("totalNtlPos", 0)
 )
 
 withdrawable = float(
-    account["withdrawable"]
+    account.get("withdrawable", 0)
 )
+
+
+positions = account.get("assetPositions", [])
+
+
+print("ACCOUNT VALUES")
+print("-" * 60)
+
+print(f"Account Value:   ${account_value:,.2f}")
+print(f"Position Value:  ${position_value:,.2f}")
+print(f"Margin Used:     ${margin_used:,.2f}")
+print(f"Withdrawable:    ${withdrawable:,.2f}")
+
+print()
+
+print(f"Open positions returned: {len(positions)}")
+
+for position in positions:
+
+    print(position)
+
+print()
 
 
 # ============================================================
@@ -88,6 +135,50 @@ fills = hl_request({
     "user": WALLET,
     "aggregateByTime": False
 })
+
+
+print("=" * 60)
+print("FILL INFORMATION")
+print("=" * 60)
+
+print(f"Total fills returned: {len(fills)}")
+
+print()
+
+
+# ============================================================
+# SHOW LATEST FILLS
+# ============================================================
+
+if fills:
+
+    print("LATEST FILLS:")
+    print("-" * 60)
+
+    for fill in fills[:10]:
+
+        fill_time = datetime.fromtimestamp(
+            fill["time"] / 1000,
+            timezone.utc
+        )
+
+        print(
+            fill_time,
+            fill.get("coin"),
+            fill.get("side"),
+            fill.get("sz"),
+            "closedPnl=",
+            fill.get("closedPnl"),
+            "fee=",
+            fill.get("fee")
+        )
+
+else:
+
+    print("NO FILLS RETURNED")
+
+
+print()
 
 
 # ============================================================
@@ -106,6 +197,16 @@ today_fills = [
         timezone.utc
     ).date() == today
 ]
+
+
+print("=" * 60)
+print("TODAY")
+print("=" * 60)
+
+print(f"UTC date: {today}")
+print(f"Today's fills: {len(today_fills)}")
+
+print()
 
 
 # ============================================================
@@ -153,6 +254,22 @@ Trades/Fills:           {len(today_fills)}
 Closed P&L:             ${closed_pnl:,.2f}
 Trading Fees:           ${fees:,.2f}
 NET P&L:                ${net_pnl:,.2f}
+
+
+DEBUG
+-----
+
+Wallet:
+{WALLET}
+
+Total fills returned:
+{len(fills)}
+
+Today's fills:
+{len(today_fills)}
+
+Open positions:
+{len(positions)}
 """
 
 
@@ -160,7 +277,7 @@ print(report)
 
 
 # ============================================================
-# SEND EMAIL USING RESEND
+# SEND EMAIL
 # ============================================================
 
 subject = f"Hyperliquid Daily Report - {today}"
