@@ -51,7 +51,21 @@ def hl_request(payload):
 
 
 # ============================================================
-# ACCOUNT STATE
+# DEBUG - WALLET
+# ============================================================
+
+print("=" * 70)
+print("HYPERLIQUID DAILY REPORT")
+print("=" * 70)
+
+print(f"Wallet length: {len(WALLET)}")
+print(f"Wallet starts with: {WALLET[:6]}")
+print(f"Wallet ends with: {WALLET[-6:]}")
+print()
+
+
+# ============================================================
+# PERPETUAL CLEARINGHOUSE STATE
 # ============================================================
 
 account = hl_request({
@@ -60,7 +74,22 @@ account = hl_request({
 })
 
 
-margin = account.get("marginSummary", {})
+print("=" * 70)
+print("PERPETUAL ACCOUNT STATE")
+print("=" * 70)
+
+print(account)
+print()
+
+
+# ============================================================
+# ACCOUNT VALUES
+# ============================================================
+
+margin = account.get(
+    "marginSummary",
+    {}
+)
 
 cross_margin = account.get(
     "crossMarginSummary",
@@ -68,30 +97,25 @@ cross_margin = account.get(
 )
 
 
-# ============================================================
-# ACCOUNT VALUES
-# ============================================================
-
-account_value = float(
+perp_equity = float(
     margin.get("accountValue", 0)
 )
 
-margin_used = float(
-    margin.get("totalMarginUsed", 0)
-)
 
 position_value = float(
     margin.get("totalNtlPos", 0)
 )
 
+
+margin_used = float(
+    margin.get("totalMarginUsed", 0)
+)
+
+
 withdrawable = float(
     account.get("withdrawable", 0)
 )
 
-
-# ============================================================
-# POSITIONS
-# ============================================================
 
 positions = account.get(
     "assetPositions",
@@ -100,7 +124,114 @@ positions = account.get(
 
 
 # ============================================================
-# FILLS
+# SPOT CLEARINGHOUSE STATE
+# ============================================================
+
+spot_account = hl_request({
+    "type": "spotClearinghouseState",
+    "user": WALLET
+})
+
+
+print("=" * 70)
+print("SPOT ACCOUNT STATE")
+print("=" * 70)
+
+print(spot_account)
+print()
+
+
+# ============================================================
+# SPOT BALANCES
+# ============================================================
+
+spot_balances = spot_account.get(
+    "balances",
+    []
+)
+
+
+usdc_balance = 0.0
+
+
+for balance in spot_balances:
+
+    coin = balance.get(
+        "coin",
+        ""
+    )
+
+    if coin.upper() == "USDC":
+
+        usdc_balance = float(
+            balance.get(
+                "total",
+                0
+            )
+        )
+
+        break
+
+
+# ============================================================
+# PRINT ACCOUNT VALUES
+# ============================================================
+
+print("=" * 70)
+print("ACCOUNT VALUES")
+print("=" * 70)
+
+print(
+    f"Perp Equity:       ${perp_equity:,.2f}"
+)
+
+print(
+    f"USDC Balance:      ${usdc_balance:,.2f}"
+)
+
+print(
+    f"Position Value:    ${position_value:,.2f}"
+)
+
+print(
+    f"Margin Used:       ${margin_used:,.2f}"
+)
+
+print(
+    f"Withdrawable:      ${withdrawable:,.2f}"
+)
+
+print(
+    f"Open Positions:    {len(positions)}"
+)
+
+print()
+
+
+# ============================================================
+# OPEN POSITIONS
+# ============================================================
+
+if positions:
+
+    print("=" * 70)
+    print("OPEN POSITIONS")
+    print("=" * 70)
+
+    for position in positions:
+
+        print(position)
+
+    print()
+
+else:
+
+    print("No open positions returned.")
+    print()
+
+
+# ============================================================
+# GET FILLS
 # ============================================================
 
 fills = hl_request({
@@ -108,6 +239,51 @@ fills = hl_request({
     "user": WALLET,
     "aggregateByTime": False
 })
+
+
+print("=" * 70)
+print("FILLS")
+print("=" * 70)
+
+print(
+    f"Total fills returned: {len(fills)}"
+)
+
+print()
+
+
+# ============================================================
+# SHOW RECENT FILLS IN GITHUB LOG
+# ============================================================
+
+if fills:
+
+    print("LATEST FILLS")
+    print("-" * 70)
+
+    for fill in fills[:10]:
+
+        fill_time = datetime.fromtimestamp(
+            fill["time"] / 1000,
+            timezone.utc
+        )
+
+        print(
+            f"{fill_time} | "
+            f"{fill.get('coin')} | "
+            f"side={fill.get('side')} | "
+            f"dir={fill.get('dir')} | "
+            f"sz={fill.get('sz')} | "
+            f"px={fill.get('px')} | "
+            f"closedPnl={fill.get('closedPnl')} | "
+            f"fee={fill.get('fee')}"
+        )
+
+else:
+
+    print("NO FILLS RETURNED")
+
+print()
 
 
 # ============================================================
@@ -129,12 +305,62 @@ today_fills = [
 ]
 
 
+print("=" * 70)
+print("TODAY")
+print("=" * 70)
+
+print(
+    f"UTC date:        {today}"
+)
+
+print(
+    f"Today's fills:   {len(today_fills)}"
+)
+
+print()
+
+
+# ============================================================
+# TODAY'S FILLS
+# ============================================================
+
+if today_fills:
+
+    print("TODAY'S FILLS")
+    print("-" * 70)
+
+    for fill in today_fills:
+
+        fill_time = datetime.fromtimestamp(
+            fill["time"] / 1000,
+            timezone.utc
+        )
+
+        print(
+            f"{fill_time} | "
+            f"{fill.get('coin')} | "
+            f"side={fill.get('side')} | "
+            f"dir={fill.get('dir')} | "
+            f"sz={fill.get('sz')} | "
+            f"px={fill.get('px')} | "
+            f"closedPnl={fill.get('closedPnl')} | "
+            f"fee={fill.get('fee')}"
+        )
+
+    print()
+
+
 # ============================================================
 # REALISED P&L
 # ============================================================
 
-realised_pnl = sum(
-    float(x.get("closedPnl", 0))
+closed_pnl = sum(
+    float(
+        x.get(
+            "closedPnl",
+            0
+        )
+    )
     for x in today_fills
 )
 
@@ -144,7 +370,14 @@ realised_pnl = sum(
 # ============================================================
 
 fees = sum(
-    abs(float(x.get("fee", 0)))
+    abs(
+        float(
+            x.get(
+                "fee",
+                0
+            )
+        )
+    )
     for x in today_fills
 )
 
@@ -153,11 +386,14 @@ fees = sum(
 # NET P&L
 # ============================================================
 
-net_pnl = realised_pnl - fees
+net_pnl = (
+    closed_pnl
+    - fees
+)
 
 
 # ============================================================
-# TRADE BREAKDOWN
+# ENTRY / REDUCTION BREAKDOWN
 # ============================================================
 
 long_entries = 0
@@ -170,39 +406,83 @@ short_reductions = 0
 for fill in today_fills:
 
     side = str(
-        fill.get("side", "")
+        fill.get(
+            "side",
+            ""
+        )
     ).upper()
 
-    closed_pnl = float(
-        fill.get("closedPnl", 0)
+    closed_value = float(
+        fill.get(
+            "closedPnl",
+            0
+        )
     )
 
-    # Hyperliquid sides:
-    #
-    # B = Buy
-    # A = Sell
-    #
-    # A fill with non-zero closedPnl
-    # generally represents reduction/closure
-    #
-    # B fill with non-zero closedPnl
-    # generally represents reduction/closure
+    direction = str(
+        fill.get(
+            "dir",
+            ""
+        )
+    ).lower()
 
 
-    if side in ("B", "BUY"):
+    # --------------------------------------------------------
+    # Use Hyperliquid's "dir" field where available
+    # --------------------------------------------------------
 
-        if abs(closed_pnl) > 0:
-            long_reductions += 1
-        else:
-            long_entries += 1
+    if "open long" in direction:
+
+        long_entries += 1
+
+    elif "open short" in direction:
+
+        short_entries += 1
+
+    elif (
+        "long" in direction
+        and (
+            "close" in direction
+            or "reduce" in direction
+        )
+    ):
+
+        long_reductions += 1
+
+    elif (
+        "short" in direction
+        and (
+            "close" in direction
+            or "reduce" in direction
+        )
+    ):
+
+        short_reductions += 1
+
+    else:
+
+        # Fallback based on closed P&L
+
+        if side in ("B", "BUY"):
+
+            if abs(closed_value) > 0:
+
+                long_reductions += 1
+
+            else:
+
+                long_entries += 1
 
 
-    elif side in ("A", "SELL"):
+        elif side in ("A", "SELL"):
 
-        if abs(closed_pnl) > 0:
-            short_reductions += 1
-        else:
-            short_entries += 1
+            if abs(closed_value) > 0:
+
+                short_reductions += 1
+
+            else:
+
+                short_entries += 1
 
 
 # ============================================================
@@ -219,33 +499,44 @@ Date: {today}
 ACCOUNT
 -------
 
-Account Value / Equity: ${account_value:,.2f}
-Position Value:         ${position_value:,.2f}
-Margin Used:            ${margin_used:,.2f}
-Withdrawable:           ${withdrawable:,.2f}
+Perp Equity:             ${perp_equity:,.2f}
+USDC Balance:            ${usdc_balance:,.2f}
+Position Value:          ${position_value:,.2f}
+Margin Used:             ${margin_used:,.2f}
+Withdrawable:            ${withdrawable:,.2f}
+
+Open Positions:          {len(positions)}
 
 
 TODAY'S TRADING
 ---------------
 
-Fills:                  {len(today_fills)}
+Fills:                   {len(today_fills)}
 
-Long Entries:           {long_entries}
-Short Entries:          {short_entries}
+Long Entries:            {long_entries}
+Short Entries:           {short_entries}
 
-Long Reductions:        {long_reductions}
-Short Reductions:       {short_reductions}
+Long Reductions:         {long_reductions}
+Short Reductions:        {short_reductions}
 
 
 P&L
 ---
 
-Realised P&L:           ${realised_pnl:,.2f}
-Trading Fees:           ${fees:,.2f}
+Realised P&L:            ${closed_pnl:,.2f}
+Trading Fees:            ${fees:,.2f}
 
-NET P&L:                ${net_pnl:,.2f}
+NET P&L:                 ${net_pnl:,.2f}
 """
 
+
+# ============================================================
+# PRINT REPORT
+# ============================================================
+
+print("=" * 70)
+print("EMAIL REPORT")
+print("=" * 70)
 
 print(report)
 
@@ -277,12 +568,18 @@ try:
         "Email sent successfully."
     )
 
+    print(
+        email
+    )
+
 except Exception as e:
 
     print(
         "Failed to send email."
     )
 
-    print(e)
+    print(
+        e
+    )
 
     raise
