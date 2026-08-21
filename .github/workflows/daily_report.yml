@@ -1,5 +1,7 @@
 name: Hyperliquid Daily Report
 
+# Scheduled Hyperliquid report
+
 on:
   schedule:
     - cron: "*/5 * * * *"
