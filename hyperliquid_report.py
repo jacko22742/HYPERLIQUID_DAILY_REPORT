@@ -1,7 +1,6 @@
 import os
 import requests
-import smtplib
-from email.mime.text import MIMEText
+import resend
 from datetime import datetime, timezone
 
 
@@ -11,13 +10,21 @@ from datetime import datetime, timezone
 
 WALLET = os.environ["HYPERLIQUID_WALLET"]
 
-EMAIL_USERNAME = os.environ["EMAIL_USERNAME"]
-EMAIL_PASSWORD = os.environ["EMAIL_PASSWORD"]
+RESEND_API_KEY = os.environ["RESEND_API_KEY"]
+EMAIL_FROM = os.environ["EMAIL_FROM"]
 
 EMAIL_TO = [
     x.strip()
     for x in os.environ["EMAIL_TO"].split(",")
+    if x.strip()
 ]
+
+
+# ============================================================
+# RESEND
+# ============================================================
+
+resend.api_key = RESEND_API_KEY
 
 
 # ============================================================
@@ -132,14 +139,17 @@ Date: {today}
 
 ACCOUNT
 -------
+
 Account Value / Equity: ${account_value:,.2f}
 Position Value:         ${position_value:,.2f}
 Margin Used:            ${margin_used:,.2f}
 Withdrawable:           ${withdrawable:,.2f}
 
+
 TODAY'S TRADING
 ---------------
-Trades/Fills:            {len(today_fills)}
+
+Trades/Fills:           {len(today_fills)}
 Closed P&L:             ${closed_pnl:,.2f}
 Trading Fees:           ${fees:,.2f}
 NET P&L:                ${net_pnl:,.2f}
@@ -150,42 +160,30 @@ print(report)
 
 
 # ============================================================
-# SEND EMAIL
+# SEND EMAIL USING RESEND
 # ============================================================
 
-message = MIMEText(
-    report,
-    "plain"
-)
-
-message["Subject"] = (
-    f"Hyperliquid Daily Report - {today}"
-)
-
-message["From"] = EMAIL_USERNAME
-
-message["To"] = ", ".join(
-    EMAIL_TO
-)
+subject = f"Hyperliquid Daily Report - {today}"
 
 
-with smtplib.SMTP(
-    "smtp-mail.outlook.com",
-    587
-) as server:
-
-    server.starttls()
-
-    server.login(
-        EMAIL_USERNAME,
-        EMAIL_PASSWORD
-    )
-
-    server.sendmail(
-        EMAIL_USERNAME,
-        EMAIL_TO,
-        message.as_string()
-    )
+params = {
+    "from": EMAIL_FROM,
+    "to": EMAIL_TO,
+    "subject": subject,
+    "text": report
+}
 
 
-print("Email sent successfully.")
+try:
+
+    email = resend.Emails.send(params)
+
+    print("Email sent successfully.")
+    print(email)
+
+except Exception as e:
+
+    print("Failed to send email.")
+    print(e)
+
+    raise
