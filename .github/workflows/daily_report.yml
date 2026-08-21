@@ -2,18 +2,16 @@ name: Hyperliquid Daily Report
 
 on:
   schedule:
-    - cron: "40 9 * * *"
+    - cron: "50 9 * * *"
       timezone: "Europe/London"
 
   workflow_dispatch:
 
 jobs:
   report:
-
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
 
